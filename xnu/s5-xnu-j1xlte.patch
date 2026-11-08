@@ -1089,6 +1089,34 @@ index 9d26833..e37be9c 100644
  	 * Processes that join using this mach port will inherit this process'
  	 * pre-selection masks.
  	 */
+diff --git a/xnu/bsd/vfs/vfs_syscalls.c b/xnu/bsd/vfs/vfs_syscalls.c
+index 0882469..4e06feb 100644
+--- a/xnu/bsd/vfs/vfs_syscalls.c
++++ b/xnu/bsd/vfs/vfs_syscalls.c
+@@ -3280,6 +3280,23 @@ open_nocancel(proc_t p, struct open_nocancel_args *uap, int32_t *retval)
+ 	struct nameidata nd;
+ 	int cmode;
+ 
++#ifndef J1_S5_GUI2X
++#define J1_S5_GUI2X 0
++#endif
++#if defined(J1_S5) && J1_S5_GUI2X /* run 141: at 480x800 @1x the cache is read again (run 135 behaviour; ignoring it
++	 * made MobileGestaltHelper crash-loop and SpringBoard die in CoreImage GL in run 140) */
++	/* Run 136: the screen geometry changed (640x1136 @2x). MobileGestalt keeps main-screen-* in its cache on /var and
++	 * would keep the old values: report the cache as absent to read-only opens so the answers come from the hardware
++	 * again (writing it still works; it is simply never read back). */
++	if ((uap->flags & O_ACCMODE) == O_RDONLY) {
++		static const char mgcache[] = "/private/var/mobile/Library/Caches/com.apple.MobileGestalt.plist";
++		char pbuf[sizeof(mgcache) + 1];
++		size_t plen = 0;
++		if (copyinstr(uap->path, pbuf, sizeof(pbuf), &plen) == 0 &&
++		    (strcmp(pbuf, mgcache) == 0 || strcmp(pbuf, mgcache + 8) == 0)) /* also /var/mobile/... */
++			return (ENOENT);
++	}
++#endif
+ 	VATTR_INIT(&va);
+ 	/* Mask off all but regular access permissions */
+ 	cmode = ((uap->mode &~ fdp->fd_cmask) & ALLPERMS) & ~S_ISTXT;
 diff --git a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
 index 75a24f4..ece2b4e 100644
 --- a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
@@ -1153,7 +1181,7 @@ index 75a24f4..ece2b4e 100644
      ios7leo_prepare_log_reader(); /* optional owned logger before rawmedia publication */
      ios7leo_register_sd(this);
 diff --git a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoDisplay.cpp b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoDisplay.cpp
-index 8c9e812..990abdd 100644
+index 8c9e812..c5f374d 100644
 --- a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoDisplay.cpp
 +++ b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoDisplay.cpp
 @@ -16,6 +16,7 @@ int ios7j1_display_ready(void);
@@ -1164,7 +1192,7 @@ index 8c9e812..990abdd 100644
  }
  #define ios7leo_display_ready ios7j1_display_ready
  #define ios7leo_display_present(px,bytes,row,fmt,seq) ios7j1_display_present((const unsigned char*)(px),(bytes),(row),(fmt),(unsigned long long*)(seq))
-@@ -48,6 +49,14 @@ struct LeoGraphicsCall {
+@@ -48,7 +49,18 @@ struct LeoGraphicsCall {
      uint32_t surface,reason,mismatch;
      bool backend;
  };
@@ -1177,9 +1205,70 @@ index 8c9e812..990abdd 100644
 +#define LEO_VSYNC_US 16667
 +#endif
  enum { LEO_VSYNC_PORT=1,LEO_VSYNC_CALLBACK=2,LEO_VSYNC_EMIT=3,LEO_VSYNC_CLOSE=4 };
++#ifndef J1_S5_GUI2X
++#define J1_S5_GUI2X 0 /* run 140: 640x1136 @2x GUI (runs 136-139) off; J1_KFLAGS=-DJ1_S5_GUI2X=1 turns it on */
++#endif
  struct LeoVsyncAction {
      uint32_t operation;
-@@ -359,6 +368,12 @@ static bool ios7lab_primary_ready(void)
+     mach_port_t port;
+@@ -220,7 +232,18 @@ static uint32_t primaryBytes;
+ static IOMemoryMap *primaryKernelPixels;
+ static uint64_t scanoutSequence;
+ static uint32_t displayBudget;
++#if defined(J1_S5) && J1_S5_GUI2X
++/* run 136: the iPod5,1 userland is retina-only (most artwork @2x only): present a 640x1136 @2x (320x568 pt, iPhone 5
++ * class) screen; the kernel mirror scales it x27/16 to 1080x1917 on the panel. The 480x800 J1 console buffer stays. */
++static const uint32_t leoWidth=640,leoHeight=1136,leoRow=2560;
++#else
+ static const uint32_t leoWidth=480,leoHeight=800,leoRow=1920;
++#endif
++#if defined(J1_S5) && J1_S5_GUI2X
++static const uint32_t offscreenPixelBytes = 2560U * 1136U; /* 2908160 = 710 pages */
++#else
++static const uint32_t offscreenPixelBytes = 1536000U;
++#endif
+ static const uint32_t primarySurfaceID = 1;
+ static uint32_t activeScanoutSurfaceID = primarySurfaceID;
+ enum { IOS7LAB_MAX_OFFSCREEN = 64 };
+@@ -245,7 +268,7 @@ extern "C" void ios7leo_primary_observe(LeoDisplayObservation *out)
+ {
+  if(!out || out->version!=1 || !primaryLock)return;
+  if(!IOLockTryLock(primaryLock)){out->known|=LEO_OBS_PRIMARY_LOCK_BUSY;return;}
+- if(primaryKernelPixels && primaryPixels && primaryControl && primaryBytes==1536000U &&
++ if(primaryKernelPixels && primaryPixels && primaryControl && primaryBytes==offscreenPixelBytes &&
+     primaryKernelPixels->getAddress() && primaryKernelPixels->getLength()>=primaryBytes &&
+     primaryControl->getBytesNoCopy()){
+   volatile const uint32_t *pixels=(volatile const uint32_t *)primaryKernelPixels->getAddress();
+@@ -253,7 +276,7 @@ extern "C" void ios7leo_primary_observe(LeoDisplayObservation *out)
+   out->primary_bytes=primaryBytes;out->primary_seed_before=control[2];out->active_surface=activeScanoutSurfaceID;
+   uint32_t hash=2166136261U,rgb=0,alpha=0;
+   for(unsigned y=0;y<32;y++)for(unsigned x=0;x<32;x++){
+-   unsigned index=((y*799U)/31U)*480U+(x*479U)/31U;
++   unsigned index=((y*(leoHeight-1U))/31U)*leoWidth+(x*(leoWidth-1U))/31U;
+    uint32_t value=pixels[index];hash=(hash^value)*16777619U;
+    if(value&0x00ffffffU)++rgb;if(value&0xff000000U)++alpha;
+   }
+@@ -263,7 +286,7 @@ extern "C" void ios7leo_primary_observe(LeoDisplayObservation *out)
+  }
+  IOLockUnlock(primaryLock);
+ }
+-static const uint32_t offscreenPixelBytes = 1536000U;
++/* offscreenPixelBytes: defined with leoWidth above */
+ static bool ios7leo_memory_room(uint32_t additional)
+ {
+  uint64_t managed=sane_size>>12,freePages=vm_page_free_count;
+@@ -309,8 +332,8 @@ static bool ios7lab_fullframe_scanout_layout(const uint32_t *words, uint32_t sur
+     memcpy(expected, words, 6 * sizeof(uint32_t)); /* Three original UInt64 timestamp pairs, not a synthetic physical-vblank event. */
+     expected[6] = words[6];                       /* Separately validated transaction. */
+     expected[7] = surfaceID;
+-    expected[13] = expected[29] = expected[53] = (uint32_t)PE_state.video.v_width;
+-    expected[14] = expected[30] = expected[54] = (uint32_t)PE_state.video.v_height;
++    expected[13] = expected[29] = expected[53] = leoWidth;  /* run 137: GUI size (J1_S5: 640x1136), not the J1 console */
++    expected[14] = expected[30] = expected[54] = leoHeight;
+     expected[43] = 1;
+     expected[67] = words[67];
+     expected[68] = words[68];
+@@ -359,6 +382,12 @@ static bool ios7lab_primary_ready(void)
      return true;
  }
  
@@ -1192,7 +1281,7 @@ index 8c9e812..990abdd 100644
  static IOReturn ios7lab_present_owned_scanout(uint32_t id)
  {
      IOReturn result=kIOReturnNotFound;
-@@ -573,6 +588,31 @@ IOReturn IOS7LabSurfaceClient::describeOffscreen(uint32_t id,
+@@ -573,6 +602,35 @@ IOReturn IOS7LabSurfaceClient::describeOffscreen(uint32_t id,
  
  IOReturn IOS7LabSurfaceClient::createOffscreen(IOExternalMethodArguments *args)
  {
@@ -1217,14 +1306,32 @@ index 8c9e812..990abdd 100644
 +            }
 +        }
 +        /* The request asks for IOSurfaceBytesPerRow 0x800 and IOSurfaceAllocSize 0x190000; clients index by that stride. */
++#if defined(J1_S5) && J1_S5_GUI2X
++        IOS7LabSimpleSurfaceRequest geometryS4 = {0, 0, leoWidth, leoHeight, 0x42475241U, 4, leoRow, offscreenPixelBytes};
++#else
 +        IOS7LabSimpleSurfaceRequest geometryS4 = {0, 0, 480, 800, 0x42475241U, 4, 2048, 0x190000U};
++#endif
 +        return createSurface(&geometryS4, args);
 +    }
 +#endif
      if (args->scalarInputCount || !args->structureInput ||
          args->structureInputSize != sizeof(ios7lab_fullscreen_surface_request) ||
          memcmp(args->structureInput, ios7lab_fullscreen_surface_request,
-@@ -743,6 +783,16 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -720,8 +778,13 @@ IOReturn IOS7LabSurfaceClient::describe(IOExternalMethodArguments *args)
+     info[2] = (uint32_t)controlMap->getAddress();
+     info[4] = primarySurfaceID;
+     info[5] = primaryBytes;
++#if defined(J1_S5) && J1_S5_GUI2X
++    info[6] = leoWidth;
++    info[7] = leoHeight;
++#else
+     info[6] = (uint32_t)PE_state.video.v_width;
+     info[7] = (uint32_t)PE_state.video.v_height;
++#endif
+     info[8] = leoRow;
+     info[10] = 0x42475241U; /* BGRA */
+     info[14] = 0x01010004U; /* uint16 bytes=4, uint8 elementWidth=1, uint8 elementHeight=1 */
+@@ -743,6 +806,16 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
      if (logs++ < 96)
          IOLog("IOS7LAB surface method=%u scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
                selector, args->scalarInputCount, args->structureInputSize, args->scalarOutputCount, args->structureOutputSize);
@@ -1241,7 +1348,7 @@ index 8c9e812..990abdd 100644
      if (args->structureInputDescriptor || args->structureOutputDescriptor) return kIOReturnUnsupported;
      IOReturn result = kIOReturnUnsupported;
      IOLockLock(mappingLock);
-@@ -762,6 +812,12 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -762,6 +835,12 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
              IOLog("IOS7LAB native surface capabilities row-align=%u offset-align=%u max-row=%u max-width=%u max-height=%u\n",
                  capabilities.rowAlignmentMask + 1, capabilities.offsetAlignmentMask + 1,
                  capabilities.maximumRowBytes, capabilities.maximumWidth, capabilities.maximumHeight);
@@ -1254,7 +1361,7 @@ index 8c9e812..990abdd 100644
      } else if (selector == 25 && args->scalarInputCount == 1 && args->scalarInput &&
                 !args->structureInputSize && args->scalarOutputCount == 1 &&
                 args->scalarOutput && !args->structureOutputSize) {
-@@ -796,6 +852,9 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -796,6 +875,9 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
          if (request[1] & ~3U) result = kIOReturnUnsupported;
          else if (selector == 2) {
              __sync_synchronize(); /* CPU-only backing has no outstanding GPU work. */
@@ -1264,7 +1371,7 @@ index 8c9e812..990abdd 100644
              result = request[0] == primarySurfaceID ? describe(args) :
                  describeOffscreen(request[0], args, false);
          } else if (args->structureOutput && args->structureOutputSize >= 4) {
-@@ -923,6 +982,60 @@ OSDefineMetaClassAndStructors(IOS7LabFramebufferClient, IOUserClient);
+@@ -923,6 +1005,60 @@ OSDefineMetaClassAndStructors(IOS7LabFramebufferClient, IOUserClient);
  OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
  OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
  
@@ -1325,7 +1432,7 @@ index 8c9e812..990abdd 100644
  bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
      UInt32 type, OSDictionary *properties)
  {
-@@ -985,7 +1098,7 @@ void IOS7LabFramebufferClient::noteGraphics(uint32_t kind,uint32_t selector,
+@@ -985,7 +1121,7 @@ void IOS7LabFramebufferClient::noteGraphics(uint32_t kind,uint32_t selector,
  IOReturn IOS7LabFramebufferClient::applyVsyncTimer(bool enabled,uint64_t generation)
  {
      IOReturn result=kIOReturnSuccess;
@@ -1334,7 +1441,7 @@ index 8c9e812..990abdd 100644
      else vsyncTimer->cancelTimeout();
      IOLockLock(transactionLock);
      bool current=vsyncGeneration==generation;
-@@ -1055,7 +1168,7 @@ void IOS7LabFramebufferClient::emitVsyncGated(IOTimerEventSource *sender)
+@@ -1055,7 +1191,7 @@ void IOS7LabFramebufferClient::emitVsyncGated(IOTimerEventSource *sender)
      OSAsyncReference64 reference;
      uint64_t now = mach_absolute_time();
      AbsoluteTime intervalTime;
@@ -1343,7 +1450,7 @@ index 8c9e812..990abdd 100644
      uint64_t interval = __OSAbsoluteTime(intervalTime);
      io_user_reference_t values[6] = {
          (uint32_t)now, (uint32_t)(now >> 32),
-@@ -1340,6 +1453,16 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
+@@ -1340,6 +1476,16 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
          uint32_t metadataReason = 0, metadataMismatch = 0xffffffffU;
          bool originalLayout = ios7lab_fullframe_scanout_layout(words, words[7],
              &metadataReason, &metadataMismatch);
@@ -1360,7 +1467,18 @@ index 8c9e812..990abdd 100644
          if (!originalLayout || !ios7lab_primary_ready()) {
              if (originalLayout) metadataReason = IOS7LabSwapMetaPrimaryReady;
              note->reason=metadataReason;note->mismatch=metadataMismatch;
-@@ -1567,6 +1690,16 @@ void ios7leo_register_display(IOService *platform)
+@@ -1494,8 +1640,8 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
+     }
+     /* Original 7.1.2 GetDisplaySize: two uint64 output values. */
+     if (selector == 8 && args->scalarOutput && args->scalarOutputCount == 2) {
+-        args->scalarOutput[0] = PE_state.video.v_width;
+-        args->scalarOutput[1] = PE_state.video.v_height;
++        args->scalarOutput[0] = leoWidth;  /* run 137: GUI size, read by MobileGestalt main-screen-* */
++        args->scalarOutput[1] = leoHeight;
+         return kIOReturnSuccess;
+     }
+     /* Original GetMainDisplay filters selector18 for the primary display. */
+@@ -1567,6 +1713,16 @@ void ios7leo_register_display(IOService *platform)
      surfaces->setProperty("IOS7LabBackend","J1 owned BGRA CPU surface / direct FB RGB565");
      display->setName("IOS7J1FB");display->setProperty("IOS7LabBackend","Samsung J1 DECON direct RGB565 480x800");
      surfaces->registerService();display->registerService();
@@ -1473,6 +1591,25 @@ index 0a9bf6f..6322fcd 100644
   if(result<0){
    publishSnapshot();
    if(transferLogs<4U){++transferLogs;IOLog("IOS7LEO TOUCH poll-error=%d stage=%u status=%08x diagnostic=%08x; no-synthetic-up\n",result,state.stage,state.last_status,state.last_diagnostic);}
+diff --git a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoTouchWire.h b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoTouchWire.h
+index 8305641..07f7a4b 100644
+--- a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoTouchWire.h
++++ b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoTouchWire.h
+@@ -40,7 +40,14 @@ static bool leo_touch_make_hid_packet(uint32_t x,uint32_t y,uint32_t down,
+  packet->header.options=options|2U;packet->header.eventCount=2;
+  LeoHIDDigitizer hand={};hand.size=sizeof(hand);hand.type=11;
+  hand.options=options|2U;
++#ifndef J1_S5_GUI2X
++#define J1_S5_GUI2X 0
++#endif
++#if defined(J1_S5) && J1_S5_GUI2X
++ hand.x=(int32_t)(x*65536U/639U);hand.y=(int32_t)(y*65536U/1135U); /* run 136: 640x1136 GUI */
++#else
+  hand.x=(int32_t)(x*65536U/479U);hand.y=(int32_t)(y*65536U/799U);
++#endif
+  hand.transducerType=3;hand.eventMask=hand.childEventMask=mask;
+  packet->hand=hand;
+  LeoHIDDigitizer finger=hand;finger.options=options;finger.depth=1;
 diff --git a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7QemuVirtioBlk.cpp b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7QemuVirtioBlk.cpp
 new file mode 100644
 index 0000000..a7ecd81
@@ -2576,10 +2713,10 @@ index 0000000..db188a5
 +#endif
 diff --git a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7S5SDHCI.cpp b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7S5SDHCI.cpp
 new file mode 100644
-index 0000000..5052c15
+index 0000000..fc88fa9
 --- /dev/null
 +++ b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7S5SDHCI.cpp
-@@ -0,0 +1,787 @@
+@@ -0,0 +1,790 @@
 +#if defined(J1_S5)
 +/*
 + * Galaxy S5 (SM-G900M klte, MSM8974PRO-AC): the internal eMMC (Hynix H16GE2, 16 GB) on SDCC1, driven through its standard
@@ -3208,9 +3345,15 @@ index 0000000..5052c15
 +            return;
 +        }
 +    }
-+    UInt8 *buf = (UInt8 *)IOMalloc(LOG_BYTES);
++    /* Run 143: allocated once. Run 142 lost every dump after ~63 s: IOMalloc of 260 KB failed under memory pressure
++     * (free pages 116823 -> 68827) and the dump was silently skipped. */
++    static UInt8 *buf;
 +    if (!buf)
++        buf = (UInt8 *)IOMalloc(LOG_BYTES);
++    if (!buf) {
++        IOLog("S5LOG: buffer allocation failed\n");
 +        return;
++    }
 +    bcopy((const void *)lm->getAddress(), buf, LOG_BYTES);
 +    IOReturn rc = kIOReturnSuccess;
 +    IOLockLock(mutex);
@@ -3220,7 +3363,6 @@ index 0000000..5052c15
 +        s += k;
 +    }
 +    IOLockUnlock(mutex);
-+    IOFree(buf, LOG_BYTES);
 +    if (1)
 +        IOLog("S5LOG: dump %u -> %08x io=%u fails=%u last=%llu free=%u memerr=%u@%u vfp=%u/%u/%u\n", n, (unsigned)rc, s5io_reqs, s5io_fails, (unsigned long long)s5io_lastfail, vm_page_free_count, j1_memerr_count, j1_memerr_site, j1_vfp_traps, j1_vfp_else, j1_vfp_dup_notcur);
 +    dumpFrame(n);
@@ -3339,8 +3481,6 @@ index 0000000..5052c15
 +                IOSleep(200);
 +                dev->sampleBest();
 +            }
-+        if (n == 6 || n == 12 || n == 24 || n == 36)
-+            s4_dump_threads(); /* user threads with wait state; SpringBoard/backboardd with user pc + frames (S5U) */
 +        dev->dumpLog(n);
 +        dev->dumpBest(n);
 +    }
@@ -3369,10 +3509,10 @@ index 0000000..5052c15
 +#endif
 diff --git a/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7S5Touch.cpp b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7S5Touch.cpp
 new file mode 100644
-index 0000000..591babd
+index 0000000..09b1a87
 --- /dev/null
 +++ b/xnu/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7S5Touch.cpp
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,723 @@
 +#if defined(J1_S5)
 +/*
 + * Galaxy S5 (SM-G900M klte) touchscreen transport for the iOS 7 HID touch service (IOS7LeoHIDTouch.cpp, J1_S5 path):
@@ -3649,6 +3789,13 @@ index 0000000..591babd
 + */
 +#define SPMI_CORE_PA 0xfc4cf000U
 +#define SPMI_CHAN 0x800U
++#ifndef J1_S5_FILL
++#define J1_S5_FILL 1 /* run 156: 480x800 GUI fills the 1080x1920 panel (rows x2.4, ~6.7% vertical stretch); 0 = x2.25
++                      * with 60-row black bars top and bottom */
++#endif
++#ifndef J1_S5_GUI2X
++#define J1_S5_GUI2X 0 /* run 140: 640x1136 @2x GUI (runs 136-139) off; J1_KFLAGS=-DJ1_S5_GUI2X=1 turns it on */
++#endif
 +static volatile UInt32 *s5k_spmi;
 +
 +static int spmi_read(UInt32 sid, UInt32 addr, UInt8 *buf, UInt32 len)
@@ -3716,8 +3863,7 @@ index 0000000..591babd
 + * The core voltage is not changed. J1_KFLAGS=-DJ1_S5_CPU_L=0 only logs.
 + */
 +#ifndef J1_S5_CPU_L
-+#define J1_S5_CPU_L 78 /* 1497.6 MHz (stable, runs 128-129). 90 = 1728 MHz ran on the developer's phone but above the
-+                        * bootloader's voltage for that rate: build with J1_KFLAGS=-DJ1_S5_CPU_L=90 at your own risk */
++#define J1_S5_CPU_L 78 /* 1497.6 MHz (stable). 90 = 1728 MHz ran on the developer's phone but is effectively an undervolt: see README */
 +#endif
 +#define J1_S5_CPU_L_SAFE 78 /* fallback when the self-test fails at J1_S5_CPU_L */
 +/* Self-test: a fixed integer + memory workload whose result must not depend on the clock. A mismatch after a
@@ -4059,10 +4205,22 @@ index 0000000..591babd
 +        if (*down) {
 +            px = (UInt32)f[1] | (UInt32)f[2] << 8;
 +            py = (UInt32)f[3] | (UInt32)f[4] << 8;
++#if J1_S5_GUI2X
++            /* run 136: GUI 640x1136 mirrored x27/16 to panel rows 1..1917 (s5_helper.c) */
++            px = px * 16U / 27U;
++            py = py < 1U ? 0U : (py - 1U) * 16U / 27U;
++            last_x = (uint16_t)(px > 639U ? 639U : px);
++            last_y = (uint16_t)(py > 1135U ? 1135U : py);
++#else
 +            px = px * 4U / 9U;
++#if J1_S5_FILL
++            py = py * 5U / 12U; /* run 156: GUI rows fill the panel (x2.4) */
++#else
 +            py = py < 60U ? 0U : (py - 60U) * 4U / 9U;
++#endif
 +            last_x = (uint16_t)(px > 479U ? 479U : px);
 +            last_y = (uint16_t)(py > 799U ? 799U : py);
++#endif
 +        }
 +        *x = last_x;
 +        *y = last_y;
@@ -8420,10 +8578,10 @@ index 0000000..9931b52
 +}
 diff --git a/xnu/pexpert/arm/s5_helper.c b/xnu/pexpert/arm/s5_helper.c
 new file mode 100644
-index 0000000..46757f1
+index 0000000..5b6683a
 --- /dev/null
 +++ b/xnu/pexpert/arm/s5_helper.c
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,354 @@
 +/*
 + * Galaxy S5: helper core (stage 2, run 131). XNU stays single-core on CPU0; CPU1 runs this file's loop outside the
 + * scheduler and takes over the per-frame panel mirror (GUI frame -> 1080x1920 packed-24-bit panel buffer + MDP kick).
@@ -8446,6 +8604,13 @@ index 0000000..46757f1
 +#if defined(J1_S5) /* files.arm builds this for every board; the S4 Mini / Tab 2 kernels have no s4_early_mdp (2026-11-08) */
 +#define FB_ROW 3240U /* J1B_FB_ROW: 1080 * 3 */
 +#define FB_H 1920U
++#ifndef J1_S5_FILL
++#define J1_S5_FILL 1 /* run 156: 480x800 GUI fills the 1080x1920 panel (rows x2.4, ~6.7% vertical stretch); 0 = x2.25
++                      * with 60-row black bars top and bottom */
++#endif
++#ifndef J1_S5_GUI2X
++#define J1_S5_GUI2X 0 /* run 140: 640x1136 @2x GUI (runs 136-139) off; J1_KFLAGS=-DJ1_S5_GUI2X=1 turns it on */
++#endif
 +
 +extern uint32_t s4_early_fb, s4_early_mdp; /* vm_offset_t in pe_exynos3475_j1.c */
 +uint32_t s5_row_hash(const uint32_t *w, unsigned int n);
@@ -8582,7 +8747,22 @@ index 0000000..46757f1
 +}
 +
 +/* ---- the mirror (run by whichever core owns it) ---- */
-+static uint32_t m_rowhash[800];
++#if J1_S5_GUI2X
++#define GUI_W 640U  /* run 136: 640x1136 @2x GUI, x27/16 to panel rows 1..1917 */
++#define GUI_H 1136U
++#define XMAP(x) ((x) * 16U / 27U)
++#define ROW0(y) (1U + ((y) * 27U) / 16U)
++#else
++#define GUI_W 480U  /* 480x800 @1x GUI, x9/4 across */
++#define GUI_H 800U
++#define XMAP(x) ((x) * 4U / 9U)
++#if J1_S5_FILL
++#define ROW0(y) (((y) * 12U) / 5U) /* rows x2.4: panel rows 0..1919 */
++#else
++#define ROW0(y) (60U + ((y) * 9U + 3U) / 4U) /* rows x9/4: panel rows 60..1859 */
++#endif
++#endif
++static uint32_t m_rowhash[GUI_H];
 +static int m_hashed, m_cleared;
 +static unsigned char m_line[1080U * 3U] __attribute__((aligned(4)));
 +static unsigned short m_xmap[1080];
@@ -8604,26 +8784,27 @@ index 0000000..46757f1
 +uint32_t s5_mirror_frame(const uint8_t *px, uint32_t row, int kick)
 +{
 +    uint32_t fb = s4_early_fb, y, x, i, changed = 0;
-+    if (!fb || !px || row < 1920U)
++    if (!fb || !px || row < GUI_W * 4U)
 +        return 0;
 +    if (!m_cleared) {
 +        volatile uint32_t *all = (volatile uint32_t *)fb;
 +        for (i = 0; i < FB_ROW * FB_H / 4U; i++)
 +            all[i] = 0;
 +        for (x = 0; x < 1080U; x++)
-+            m_xmap[x] = (unsigned short)((x * 4U) / 9U);
++            m_xmap[x] = (unsigned short)XMAP(x); /* 1080 panel columns <- GUI columns */
 +        m_cleared = 1;
 +    }
-+    for (y = 0; y < 800U; y++) {
++    for (y = 0; y < GUI_H; y++) {
 +        const uint8_t *s = px + y * row;
-+        uint32_t d0 = (y * 9U + 3U) / 4U, d1 = ((y + 1U) * 9U + 3U) / 4U, h = s5_row_hash((const uint32_t *)s, 480U);
++        /* panel rows [d0, d1) (offset 1: 1917 rows centred in 1920) show GUI row y */
++        uint32_t d0 = ROW0(y), d1 = ROW0(y + 1U), h = s5_row_hash((const uint32_t *)s, GUI_W);
 +        if (m_hashed && m_rowhash[y] == h)
 +            continue;
 +        m_rowhash[y] = h;
 +        changed++;
 +        s5_expand_bgr(m_line, s, m_xmap, 1080U);
-+        for (i = d0; i < d1 && i < 1800U; i++)
-+            s5_copy_words((volatile uint32_t *)(fb + (60U + i) * FB_ROW), (const uint32_t *)m_line, 1080U * 3U / 4U);
++        for (i = d0; i < d1 && i < FB_H; i++)
++            s5_copy_words((volatile uint32_t *)(fb + i * FB_ROW), (const uint32_t *)m_line, 1080U * 3U / 4U);
 +    }
 +    m_hashed = 1;
 +    if (kick && changed)
@@ -8649,7 +8830,7 @@ index 0000000..46757f1
 +            const uint8_t *px = (const uint8_t *)(uintptr_t)b[B_JPX];
 +            uint32_t rowb = b[B_JROW], t0 = cntpct_lo(), a, n;
 +            __asm__ volatile("mcr p15, 0, %0, c8, c7, 0\n dsb\n isb" :: "r"(0) : "memory"); /* TLBIALL */
-+            for (a = (uint32_t)(uintptr_t)px & ~63U, n = (uint32_t)(uintptr_t)px + rowb * 800U; a < n; a += 64U)
++            for (a = (uint32_t)(uintptr_t)px & ~63U, n = (uint32_t)(uintptr_t)px + rowb * GUI_H; a < n; a += 64U)
 +                __asm__ volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(a)); /* DCIMVAC: CPU0's frame */
 +            __asm__ volatile("dsb" ::: "memory");
 +            b[B_ROWS] += s5_mirror_frame(px, rowb, 1);
@@ -8736,7 +8917,7 @@ index 0000000..46757f1
 +             * dirty in this core's cache. Clean them to RAM so CPU1 reads this frame, not the previous one (run 131:
 +             * CPU1 saw 0 changed rows on every job). */
 +            {
-+                uint32_t a = (uint32_t)(uintptr_t)px & ~63U, e = (uint32_t)(uintptr_t)px + row * 800U;
++                uint32_t a = (uint32_t)(uintptr_t)px & ~63U, e = (uint32_t)(uintptr_t)px + row * GUI_H;
 +                for (; a < e; a += 64U)
 +                    __asm__ volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(a)); /* DCCMVAC */
 +                __asm__ volatile("dsb" ::: "memory");

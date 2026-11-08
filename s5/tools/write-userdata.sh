@@ -6,6 +6,7 @@
 set -eu
 IMG=$1
 FIRST=${2:-0}
+BASE=${BASE:-0} # destination offset in 128 MiB pieces (run 133: iPod root at piece 17 = sector 4456448)
 PIECE=$((128 * 1024 * 1024))
 SIZE=$(wc -c < "$IMG" | tr -d " ")
 N=$(((SIZE + PIECE - 1) / PIECE))
@@ -21,9 +22,9 @@ for ((i = FIRST; i < N; i++)); do
     adb push "$TMP/p" /tmp/p >/dev/null 2>&1
     # busybox dd in TWRP 2.8.5 treats seek= like skip= (it skips input), so write through a loop device that starts at
     # the piece's offset into userdata; reading back with skip= is fine.
-    GOT=$(adb shell "losetup -o $((i * PIECE)) /dev/block/loop7 /dev/block/mmcblk0p26 && \
+    GOT=$(adb shell "losetup -o $(((BASE + i) * PIECE)) /dev/block/loop7 /dev/block/mmcblk0p26 && \
         dd if=/tmp/p of=/dev/block/loop7 bs=1048576 2>/dev/null; sync; losetup -d /dev/block/loop7; \
-        dd if=/dev/block/mmcblk0p26 bs=1048576 skip=$((i * 128)) count=$((LEN / 1048576)) 2>/dev/null | sha256sum; rm /tmp/p" |
+        dd if=/dev/block/mmcblk0p26 bs=1048576 skip=$(((BASE + i) * 128)) count=$((LEN / 1048576)) 2>/dev/null | sha256sum; rm /tmp/p" |
         cut -d' ' -f1)
     if [ $((LEN % 1048576)) -ne 0 ]; then
         echo "piece $i: length $LEN is not whole MiB, check by hand" >&2

@@ -4,7 +4,7 @@ The raw working notes kept during the port, newest sections at the end. Paths su
 or `ports/ipsw/...` refer to the developer's local tree: boot images, payloads, root filesystem images, logs and
 anything from Apple's or Samsung's firmware are not part of this repository. Run numbers count test boots on the phone.
 
-## S5 next session (written overnight 2026-11-07/08, phone offline)
+# S5 next session (written overnight 2026-11-07/08, phone offline)
 
 ## State on the phone (run 100, flashed 2026-11-08: keys boot + pl96)
 Backup of the previous boot partition (b7ea10be, full 13 MiB p15): `s5/build/boot-p15-b7ea10be.full.img` sha1 d13ae046.
@@ -484,3 +484,236 @@ adb reboot
   -> data movw/movt distances, cross-image BLs, objc/cfstring binds): large. Alternatives: iPad layouts fallback, or
   move the whole userland to the iPod5,1 root (phone idiom natively; shim's hard-coded SpringBoard/backboardd offsets
   must be re-derived).
+
+## Run 133: iPod5,1 userland (2026-11-08)
+- Pristine SpringBoard and backboardd are byte-identical on the iPad2,2 and iPod5,1 roots (same build 11D257), so our
+  patched copies move over as-is. Root changes vs pristine iPad (rsync diff): ringtones + UISounds/New removed,
+  LaunchDaemons cut to 48 (rest deleted), fairplayd.A1 = fbtest + plist, j1shim.dylib added, SpringBoard (bx lr
+  patches) + backboardd (LC_LOAD_DYLIB) patched, dyld cache patched in 3 places: IOKit "powerd" stubs (bx lr) at
+  iPad 0x2e18d780/0x2e18d908 = iPod 0x2e18e780/0x2e18e908 (found by masked function match), libMobileGestalt
+  mov #-1 -> #0 at iPad file 0xb6bd9fe = iPod file 0xb2159fe (unique context match).
+- s5/tools/build-ipod-root.sh builds ports/ipsw/ipod5_1_7.1.2/ex/root-ipod.hfs (1790 MiB HFSX, sha1 4704f820): kept
+  daemons = the phone's 48 (jetsamproperties.K94 -> N78; others parked in LaunchDaemons.disabled).
+- Layout: the iPod root does not fit the old 1.41 GiB root slot. Written at userdata sector 4456448 (piece 17,
+  BASE=17 bash s5/tools/write-userdata.sh ...), 3670016 sectors; MBR entry 1 repointed (s5/build/userdata-mbr.ipod.bin
+  818996f5). Old MBR backup s5/build/userdata-mbr.before-ipod.bin (44d82ef4) = the iPad root at sector 2048, still
+  intact: restore that sector to go back. Kernel unchanged (rd=disk0s1 via the FDisk scheme).
+- Root write progress: pieces 0-8 of 14 verified (BASE=17). TWRP reset itself twice ~6-7 min into long adb sessions
+  (no user action, battery 100%): likely the APPS watchdog the stub arms is never petted by TWRP's kernel after an iOS
+  run resets into recovery. Resume: BASE=17 bash s5/tools/write-userdata.sh .../root-ipod.hfs 9. Follow-up: disarm
+  the watchdog on the recovery-reset path (or have the stub not arm it when booting recovery).
+- 2026-11-08: all 14 pieces of root-ipod.hfs written + verified at userdata sector 4456448; MBR switched
+  (818996f5 read back). First iPod-userland boot (run 133: kernel r132 7070b495, payload pl109). Revert: write
+  s5/build/userdata-mbr.before-ipod.bin to userdata sector 0.
+- Run 133 result: "gl missing" in every process; fairplayd.A1 (fbtest, copies the payload to /var/tmp/j1gl.dylib) never
+  launched: build-ipod-root.sh had cp'd its plist (uid 501), launchd skips non-root plists. Fixed on device by
+  renaming a parked root-owned plist into place and overwriting it (owners-off mount), 24 sector runs written with the
+  new s5/tools/write-sector-runs.sh (base sector 4456448). root-ipod.hfs = fixed image (v1 kept as root-ipod.v1.hfs);
+  build script fixed. Run 134 = same boot/payload, fixed root.
+- Run 134: fairplayd.A1 still never launched on the iPod root (its job is fairplayd.O2; the A1 binary was also
+  uid 501). Fixed: com.apple.fairplayd.O2.plist moved back from LaunchDaemons.disabled (root-owned) and rewritten
+  (RunAtLoad/KeepAlive, /usr/sbin/fairplayd.O2), fbtest cat'd over /usr/sbin/fairplayd.O2 (chmod u+w, then 555;
+  stays root-owned), A1 plist parked. 30 runs written. root-ipod.hfs = this image (v2 kept). TODO: fold into
+  build-ipod-root.sh (keep O2 instead of A1).
+- Run 135 (iPod userland with fairplayd.O2 fix): WORKS: lock/home screen, Setup skipped, iPhone keyboard appears
+  (user photo). Issues: keyboard uses the 320-pt portrait layout (2/3 of the 480-pt screen); keyboard backdrop
+  (UIBackdropView blur) not drawn so keys float over the home screen; icon labels missing on the home screen; several
+  template icons remain (Settings, Calendar, FaceTime, Reminders, Game Center...).
+- Run 135 log: SpringBoard died once of SIGPIPE (0xd): on the iPod root its stderr is a socket; F_SETNOSIGPIPE does
+  not cover sockets -> also setsockopt(2, SOL_SOCKET, SO_NOSIGPIPE). No ICONFB/ICONMISS for app icons: the iPod root is
+  retina-only (icons/artwork mostly @2x only), we run scale 1 (480x800) -> template icons, 320-pt keyboard.
+  Proposal: present the S5 as a 640x1136 @2x (320x568 pt, iPhone 5 class) display: kernel framebuffer/surface size,
+  MG main-screen-* (via /chosen display-scale=2 and the framebuffer size), touch mapping, mirror 640->1080 (x1.6875,
+  1917 rows), shim screen-geometry fallbacks. ~1.9x pixels per frame.
+
+## Run 136: 640x1136 @2x display (flashed 2026-11-08: boot r136 78cb13f5, payload pl110 d8d3bbfd; iPod root)
+- IOS7LeoDisplay.cpp (J1_S5): leoWidth/Height/Row 640/1136/2560, offscreenPixelBytes 2908160, S4-family fullscreen
+  surface answer = that geometry, display info[6]/[7] = 640x1136 (the 480x800 J1 console buffer is unchanged).
+- s5_helper.c mirror: 640x1136 -> 1080x1917 (x27/16 both axes, panel rows 1..1917), row hash over 640 words,
+  clean/invalidate range row*1136.
+- Touch: panel -> GUI x16/27 (y offset 1), clamp 639/1135 (IOS7S5Touch.cpp); wire normalisation /639, /1135
+  (IOS7LeoTouchWire.h).
+- Device tree /chosen display-scale=2 (s5/stub/build.sh). bsd/vfs/vfs_syscalls.c open_nocancel: read-only opens of
+  /private/var/mobile/Library/Caches/com.apple.MobileGestalt.plist return ENOENT so MG recomputes main-screen-*.
+- Shim pl110: UIScreen fallbacks 320x568 / 0,20,320x548 and scale 2.0; stderr also gets SO_NOSIGPIPE (SpringBoard
+  died of SIGPIPE in run 135: its stderr is a socket on the iPod root).
+- Expect ~1.9x pixels per frame. Fallback: r132 7070b495 + pl109 (480x800).
+- Run 136 result: "glitched block in the centre". Surfaces were 640x1136 (ATTACH 280x470 row a00) and MG scale 2,
+  but MG main-screen-width/height still 480x800: libMobileGestalt uses IOMobileFramebufferGetDisplaySize, answered
+  by IOS7LeoDisplay selector 8 from PE_state.video (480x800). backboardd then died twice (prefetch abort into heap
+  0x15911400 from QuartzCore under an IOMobileFramebuffer callback) - CA display state sized from 480x800 vs 640x1136
+  surfaces. iPod cache: ___pthread_kill unslid 0x381ae1e8 (slide = pc - 0x381ae1f0).
+- Run 137 (boot sha1 6933f387, payload pl110): selector 8 GetDisplaySize and the swap-metadata expected[13/14/29/30/
+  53/54] use leoWidth/leoHeight (640x1136 on S5; equal to the console size on other boards).
+- Run 137 result: MG now 640x1136 @2x (9c400/115580/7d0), backboardd stable, presents fine; SpringBoard crash-loops
+  on a NULL deref in CoreImage's GL path (UIKit <- SpringBoardFoundation -> CoreImage; same crash as Notes in runs
+  102-106), no GL in SpringBoard.
+- Run 138 (payload pl111 9bb98325, boot stays r137): SpringBoard also gets app_coreimage_software() (CPU CIContext)
+  and app_no_eagl() (EAGLContext init -> nil).
+- Run 138 result: CIFIX + EAGLNIL fired in SpringBoard, still the same CoreImage NULL-GL crash loop (CoreImage uses
+  the current EAGL context's GL table regardless). Run 139 (payload pl112 e1d1db8d, boot r137): SpringBoard falls
+  through to the EAGL hooks (fake macro context + software GL, like backboardd) via `goto eagl_hooks`; CPU CIContext
+  kept.
+- Run 139 result: SpringBoard with software EAGL/GL stays up after one crash (QuartzCore recursive layer walk NULL
+  deref, as Settings in run 104/105), backboardd composites full 640x1136 frames but the only content is a 129x158
+  texture at (255,451) (the "block"); SpringBoard spends its time in CoreImage at 744x1392 through the software GL
+  and never draws its UI. Evidence is growing that the shim GL inside client processes corrupts QuartzCore state.
+  Recommendation: return to 480x800 @1x on the iPod root (worked in run 135) and add @2x->@1x image fallback and a
+  keyboard width fix instead.
+
+## Run 140-141: back to 480x800 @1x (2026-11-08)
+- Run 140 (boot r140 dd7f4db6, payload pl113 2bb638dc): 2x geometry gated by J1_S5_GUI2X (kernel) / J1_GUI2X (shim),
+  both default 0; display-scale=1; SpringBoard back to no GL. Result: black screen. MobileGestaltHelper crash loop and
+  SpringBoard dying in CoreImage's GL path (same NULL-GL crash as runs 137/138).
+- Cause: the run 136 MobileGestalt-cache deny (vfs_syscalls.c) was still active. The /var cache still holds the run 135
+  answers (480x800, scale 1.0, iPod); run 135 read it and worked.
+- Run 141 (boot r141 948a0b17, payload pl113): the cache deny is also under J1_S5_GUI2X (off).
+- Run 141 result: black again. MobileGestaltHelper no longer crashes (MG reads the cache: 480x800 @1), but SpringBoard
+  still dies in CoreImage GL. /var/mobile/Library/SpringBoard/LockBackground.cpbitmap was 744x1392 (trailer
+  0x2e8/0x570): the wallpaper saved at 640x1136 in runs 137-139, which SpringBoard reprocesses through CoreImage.
+- Run 142 (same boot r141 + pl113): LockBackground.cpbitmap and LockBackgroundThumbnail.jpg deleted from /var
+  (27 sectors in 21 runs via write-sector-runs.sh, base 2959360; before/after images var141*.img in the scratchpad).
+- Run 142 result: back to normal (home screen at 480x800 @1x). Settings crashed, but the ring on disk ends at ~61 s:
+  dumpLog IOMalloc'd its 260 KB buffer per dump and silently skipped dumps once that failed (free pages 116823 ->
+  68827 by dump 2). TWRP note: busybox dd `skip=` reads through the skipped data (~12 GB for the ring, minutes; looks
+  like a hang). Read the ring through losetup -o 12679888384 instead.
+- Run 143 (boot r143 7db522ef, payload pl113): dumpLog buffer allocated once (static), failure logged.
+- Run 143 result: Settings opened fine (no crash); ring ran to ~100 s (user rebooted).
+
+## Run 144: @1x artwork and keyboard width (2026-11-08)
+- s5/tools/make-1x-images.py: decodes Apple CgBI PNGs (raw deflate, BGRA premultiplied), writes half-size standard
+  RGBA PNGs for every @2x PNG without a 1x sibling. 622 made for /Applications and SpringBoard.app (4.6 MB).
+  Copied onto root-ipod.hfs (old image kept as root-ipod.v3.hfs); 14459 sectors in 296 runs, device pre-checked
+  equal to v3 in those runs, written + verified at base 4456448.
+- Shim pl114 (40f10d0b, seq 6aef7bde): fix_keyboard_width() in apps and SpringBoard hooks the class methods
+  defaultSizeForInterfaceOrientation: / sizeForInterfaceOrientation: / keyboardSizeForInterfaceOrientation: /
+  _defaultSizeForInterfaceOrientation: / defaultSizeForOrientation: on UIKeyboard, UIKeyboardImpl, UIPeripheralHost,
+  UIKeyboardLayout, UIKeyboardLayoutStar, UIInputViewSet (whichever exist) and widens portrait answers < 480 to 480.
+  Log tags: "KBWIDE hook" (installed), KBWIDE (slot, orientation, width before, height).
+- Boot stays r143.
+- Run 144 result: icons fixed except Weather and Calculator (their new icon.png files are fine); keyboard now spans
+  the screen, stretched.
+- Run 145 (same boot r143 + pl114): /var/mobile/Library/Caches/com.apple.IconsCache emptied (SpringBoard's cached
+  icon images from the template-icon runs; 84 sectors in 24 runs at base 2959360). /var copy pulled via losetup -o
+  1515192320 (fast) instead of dd skip.
+- Run 145 result: all icons fine. Keyboard stretched to 480 (OK) but too high and shifted right. KBWIDE: hooks on
+  UIKeyboard/UIKeyboardImpl (defaultSize..., sizeFor..., keyboardSizeFor..., _defaultSize...); portrait 320x216
+  widened to 480x216; landscape 800x162 / 568x162 untouched. SpringBoard died twice of SIGPIPE (0xd) at boot (Mail
+  0xf with it). Home screen shot: icons right, no labels, black wallpaper.
+- Run 146 (boot r143, payload pl115 9d2513bc seq 6aef7bdf): own setFrame: of UIKeyboard / UIPeripheralHostView /
+  UIKeyboardAutomatic / UIKeyboardLayoutStar / UIKBKeyplaneView / UIInputSetHostView hooked: frames >= 480 wide pinned
+  to x=0, first 60 logged as KBFRAME (slot x y w h). SpringBoard: signal(SIGPIPE, SIG_IGN).
+- Run 146 result: same keyboard placement (tested on SpringBoard search). KBFRAME: only UIKeyboard has its own
+  setFrame:, called with 0,0 480x216 (correct inside its host). SpringBoard no SIGPIPE deaths this run.
+- Run 147 (boot r143, payload pl116 99135049 seq 6aef7be0): UIView setFrame:/setCenter: hooked with a class-name filter
+  (UIPeripheralHost* clamp + log; UIKeyboard*/UIKB*/UIInput* log only) as KBHOST F/C lines: host strips 480 wide and
+  < 400 high pinned to x=0 (centre x 240) and y >= 800-h.
+- Run 147 result (KBHOST log): host UIPeripheralHostView 480x216 at y=584 (correct), but UIKeyboardImpl /
+  UIKeyboardLayoutStar / UIKBKeyplaneView switch to 568x162: the 480-wide portrait answer made UIKit lay out the
+  iPhone 5 LANDSCAPE keyplane (keys to x=568, 54 pt short) = "too high and right".
+- Run 148 (boot r143, payload pl117 c22e0948 seq 6aef7be1): every hooked keyboard-size answer is 480x162 (3.5-inch
+  landscape keyboard), landscape included, so the 480-wide landscape keyplane is used and the host is 480x162.
+- Run 148 result: keyboard vertically correct, still offset to the right.
+- Run 149 (boot r143, payload pl118 5c5843fa seq 6aef7be2, built, not yet flashed): isWideScreen (class and instance,
+  UIKeyboardImpl / UIKeyboardLayoutStar / UIKeyboard / UIKBTree / UIKBRenderFactory / UIKeyboardLayout /
+  UIPeripheralHost, wherever defined) answers NO so the 480-wide (3.5-inch) landscape keyplanes are chosen instead of
+  the 568-wide ones. Log tag KBNARROW.
+- Run 149 result: same (offset right). KBNARROW: no isWideScreen in the guessed classes. Run 148 log: host
+  480x162 at y=638 (correct) but UIKeyboardLayoutStar / UIKeyboardImpl / UIKBKeyplaneView resize to 568x162.
+- Run 150 (boot r143, payload pl119 08c2226e seq 6aef7be3): isWideScreen search over every class (objc_copyClassList,
+  own methods, class + instance) -> NO, logged KBNARROW +/-Class. Fallback: UIKeyboardLayoutStar frames wider than 480
+  (and < 400 high) get a horizontal squeeze transform 480/w, tx -(w-480)/2 (left-aligned); transform cleared before
+  each setFrame. KBHOST S lines log squeezes.
+- Run 150 result: keyboard fits visually (squeeze path: KBHOST S on UIKeyboardLayoutStar 568x162; the class walk only
+  found -[IMAVCamera isWideScreen], unrelated). Tapping a key crashed SpringBoard: popup UIKBBlurredKeyView, data abort
+  past a buffer end in AppSupport +0x223f6 (CPBitmap; iPod cache slide 0x325b000 this boot; found by matching the
+  J1CRASH code bytes in the cache, scratchpad findcode.py) = stale key images in
+  /var/mobile/Library/Caches/com.apple.keyboards/images (41 files from the 2x / 320-wide runs).
+- Run 151 (boot r143, payload pl120 2bfc6ec3 seq 6aef7be4): isWideScreen walk no longer called; keyboard image cache
+  emptied on /var (76 sectors, 23 runs).
+- Run 151 result: one letter typed, then the same SpringBoard crash (AppSupport +0x223f6 reading past a CPBitmap,
+  slide 0x29fc000 this boot) in the key popup: not stale files; the freshly stored keyboard-cache image is read past
+  its end.
+- Run 152 (boot r143, payload pl121 c860b4f7 seq 6aef7be5): UIKeyboardCache off: +enabled -> NO if present,
+  -cachedImageForKey:fromLayout: -> nil; its methods logged as KBCACHE.
+- Run 152 result: typing works (no crash), laggy/hangs (keyboard image cache off, every key redrawn).
+- Run 153 (boot r143, payload pl121; iPod root edit): black wallpaper cause = DefaultWallpapers.plist is keyed
+  ProductType -> DeviceColor -> DeviceEnclosureColor and MG says ProductType "QEMU-virt" (h9jDsbgj7xIVeIQ8S3/X3Q),
+  DeviceColor / DeviceEnclosureColor "unknown" (mumHZHMLEfAuTkkd28fHlQ / JhEU414EIaDvAz8ki5DSqw; MG key hash =
+  base64(md5("MGCopyAnswer"+key))[:22]). Added QEMU-virt -> unknown -> unknown -> default = static
+  /Library/Wallpaper/iPod/304@2x~ipod.png (425 sectors, 11 runs, device pre-checked). root-ipod.hfs = this image,
+  previous kept as root-ipod.v4.hfs (v1 deleted for space). Icon labels may depend on wallpaper legibility settings.
+- Run 153 result: black screen. SpringBoard crash loop, CoreImage +0x1f4d8 NULL GL table (slide 0x3621000) <-
+  UIImage drawInRect <- -[UIImage _imageWithBrightnessModifiedForLegibilityStyle:] <-
+  -[SBFStaticWallpaperView _newTreatedImage] <- initWithFrame:wallpaperImage:treatWallpaper: (744x1392 wallpaper).
+  Symbolised with scratchpad findcode.py (slide from crash code bytes), whichimg.py, objcsym.py (ObjC method tables
+  from the armv7 cache).
+- Run 154 (boot r143, payload pl122 0df90a1f seq 6aef7be6): SpringBoard forces treatWallpaper:NO in
+  -[SBFStaticWallpaperView initWithFrame:wallpaperImage:treatWallpaper:] (log WALLFIX).
+- Run 154 result: wallpaper (304) shows, SpringBoard stable.
+- Run 155 (boot r143, payload pl122): root: QEMU-virt default wallpaper -> /Library/Wallpaper/iPod/101@2x~ipod.png
+  (iOS 7 default), and 24 @1x images for MobileIcons.framework incl. AppIconMask~iphone.png (icons were unmasked =
+  square at scale 1). 711 sectors in 45 runs, device pre-checked; root-ipod.hfs = this, previous = v5 (v2 deleted).
+  /var: LockBackground.cpbitmap + thumbnail, IconsCache, sharedimagecache/Wallpaper emptied (81 sectors, 26 runs).
+- Run 156 (boot r156 0e698bd0, payload pl122): J1_S5_FILL (default 1) in s5_helper.c and IOS7S5Touch.cpp: GUI rows
+  x2.4 to panel rows 0..1919 (ROW0(y) = y*12/5), touch y = panel y * 5/12; no more 60-row bars (~6.7% vertical
+  stretch). J1_S5_FILL=0 restores the letterbox. Run 155 result not reported before this flash.
+- Run 156 result: SpringBoard stable, Safari opens (favourites grid, last frame).
+- Run 157 (boot r156, payload pl123 26de4a22 seq 6aef7be7, J1_APPTEST=1): SpringBoard thread waits 60 s, then
+  launches the 24 visible apps one by one (SBSLaunchApplicationWithIdentifier, 15 s each) and logs
+  "APPTEST idx rc pid@3s pid@15s bundle-id", then "APPTEST done". Build the normal payload without J1_APPTEST after.
+- Run 157 result (last 10 apps; the ring's circular half wrapped, first 14 lost): alive at 15 s: MobileSMS, FaceTime,
+  Videos, VoiceMemos, Passbook, AppStore, MobileStore, Music (Music later killed 0x9). Game Center aborted: QuartzCore
+  x-alloc.c:567 slab_dealloc assertion (as Settings in runs 104/105). Nike rc=8 (not launchable). assetsd crash loop =
+  most of the ring: PhotoData exists, no Photos.sqlite; URL "...Photos.sqlite?readonly_shm=1" -> Cocoa error 260.
+- Run 158 (boot r156, payload pl124 72e67448 seq 6aef7be8, J1_APPTEST=1 J1_APPTEST_COUNT=14): assetsd adds the store with
+  the plain file URL (retry with nil options); first 14 apps re-tested.
+- Run 158 result: PSTORE added (Photos.sqlite created), but assetsd still aborts: "attempt to write a readonly database"
+  (store opened with its read-only options), loop still wraps the ring (only Maps, Safari, Mail results survive: all
+  alive at 15 s). Last frame = Mail's Add Account list with no provider logos (@2x-only framework images).
+- Run 159 (boot r156, payload pl125 75e6059a seq 6aef7be9, J1_APPTEST_COUNT=11): assetsd adds the store with nil options
+  (original options logged as PSTORE-OPT). Root: 1700 @1x images for System/Library/{Frameworks,PrivateFrameworks,
+  PreferenceBundles,CoreServices,AccessibilityBundles} via make-1x-images.py (77 merged runs, 38572 sectors, device
+  pre-checked; root-ipod.hfs = this, previous v6, v3 deleted).
+- Run 159 result (no ring loss of APPTEST lines; assetsd loop fixed, store options were read-only + WAL): alive at 15 s:
+  Settings, Photos, Camera, Contacts, Calendar, Clock, Calculator, Weather. Crash: Notes + Reminders (CoreImage NULL
+  GL table <- +[CUIShapeEffectStack sharedCIContext] <- CUITextEffectStack / UIImage _imageWithStylePresets), Stocks
+  (QuartzCore +0xdcd8 NULL, recursive walk). networkd aborts repeatedly (0x6).
+- Run 160 (boot r156, payload pl126 f04531c5 seq 6aef7bea, J1_APPTEST_MASK=0x110443: Settings, Notes, Reminders, Stocks,
+  Music, Game Center): CIFIX key bug: ci_software_options set "kCIContextUseSoftwareRenderer" (the constant's name); the
+  key is "software_renderer".
+- Run 160 result: only "APPTEST start", Settings launched, ring ends right after the n=6 s4_dump_threads dump (~93 s),
+  as runs 142/143. Cause not proven: s4_dump_threads walks all threads without locks and is the common point.
+- Run 161 (boot r161 94e65cd0, payload pl126): s5LogThread no longer calls s4_dump_threads. Same 6-app test.
+- Run 161 result: same early stop (last ring dump ~93-108 s, only "APPTEST start"), so s4_dump_threads was NOT the cause.
+  CIFIX never fired (Settings only), so the CoreImage key fix is still untested. Touch at ~84 s on SBLockAlertWindow: the
+  phone was still locked when the test launched Settings at ~60 s; SBSLaunch may block behind the lock. Backdrop shaders
+  and UDA LIVELOCK lines also occur in runs that completed, so neither explains it.
+- User on runs 160/161: phone fine until the test started opening apps. Prime suspect (unproven; ring stops at the freeze):
+  CoreImage's real CPU renderer, enabled for the first time by the run 160 key fix.
+- Run 162 (boot r161, payload pl127 6e7e8a6a seq 6aef7beb, same 6-app mask, test starts after 120 s): J1_CI_SOFTWARE
+  default 0 (key back to the ignored name); +[CUIShapeEffectStack sharedCIContext] -> nil in apps and SpringBoard (log CUIFIX).
+- Run 162 result: no freeze; test completed. Alive at 15 s: Settings, Notes, Reminders (CUIFIX fired). Stocks crashes
+  (QuartzCore +0xdcd8, NULL +0xc, recursive walk). Game Center aborts (x-alloc.c:567 slab_dealloc). Music killed 0x9 by
+  backboardd (pid 29), likely the launch watchdog. Consistent with the CPU CoreImage renderer causing the 160/161 freezes
+  (not directly observed: the ring stops at a freeze). UDA LIVELOCK lines clear after retries; no link to the QuartzCore
+  failures established.
+- App status over runs 157-162, launch test only (alive at 15 s, UI not verified): Settings, Notes, Photos, Camera, Contacts,
+  Calendar, Reminders, Clock, Calculator, Weather, Maps, Safari, Mail, Messages, FaceTime, Videos, Voice Memos, Passbook,
+  App Store, iTunes Store. Failing: Stocks, Game Center, Music. Nike rc=8 (not launchable).
+- Run 163 (boot r161, payload pl128 c0a00665 seq 6aef7bec): normal build, no J1_APPTEST.
+- Stocks crash decoded: QuartzCore +0xdcd8 `ldr r1,[r0,#0xc]` after `ldr r0,[r5]`: virtual call on an object whose vtable
+  word is 0. With the slab_dealloc magic failure = memory not holding what was written (hypothesis).
+- Run 164 (boot r164 f4f0becb, payload pl129 9378b1b7 seq 6aef7bed, test mask 0x117E27: Settings, Notes, Photos, Calendar,
+  Weather, Stocks, Maps, Safari, Mail, Messages, Music, Game Center): pmap.c D-cache/walker holes: pmap_protect changed PTEs
+  with no pte_sync; cache-attribute update likewise; pte_sync had no dsb; new L1/L2 tables (zeroed/copied through the
+  cached direct map) were not cleaned (pte_sync_range). Watch: UDA LIVELOCK count should drop (162: many).
+- Run 164 result: Game Center alive at 15 s (1 sample; failed in runs 157, 162), Stocks crashes identically (3 of 3 runs, so
+  not random corruption), Music still killed by backboardd, Settings crashed once (CoreFoundation +0x46d4, bad object 0x5, lr
+  0xa03b7 in a low-address image, not identified). UDA LIVELOCK went UP, 17 -> 223, 169 of them one page (04845000, memset);
+  fsr 0x807 = translation fault, write. The run 164 pmap fixes are correct per pte_sync's own comment but did not explain
+  these failures; whether r164 is better or worse than r161 is NOT established. pmap_enter same-PA path does UNLOCK_PVH(pa)
+  after LOCK_PVH(pai): looks wrong, not changed, not checked.
+- Run 165 (boot r164, payload pl130 9c7709cf seq 6aef7bee): normal build, no J1_APPTEST. r161 kept at s5/build/xnu-boot.r161.img.
+- Run 166 (boot r161 94e65cd0, payload pl130): user chose to go back to r161; the run 164 pmap.c changes were removed from the
+  source (scratchpad ptesync_undo.py).

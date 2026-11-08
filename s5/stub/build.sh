@@ -13,7 +13,7 @@ mkdir -p "$W"
 python3 -I "$P/ports/tools/flatten-macho.py" "$K" "$W/xnu.img"
 python3 -I "$P/ports/tools/make-dt.py" "$W/dtb"   # minimal Apple-format device tree (model QEMU-virt)
 # MobileGestalt's main-screen-scale comes from IODeviceTree:/chosen "display-scale" (0 without it: SpringBoard aborts)
-python3 -I "$P/s5/tools/dt-addprop.py" "$W/dtb" chosen display-scale=1 display-rotation=0
+python3 -I "$P/s5/tools/dt-addprop.py" "$W/dtb" chosen display-scale=${S5_DISPLAY_SCALE:-1} display-rotation=0
 cd "$W"
 CF="-march=armv7-a -mfloat-abi=soft -marm -Os -ffreestanding -fno-builtin -nostdlib"
 arm-none-eabi-gcc $CF -c "$D/stub.c" -o stub_c.o

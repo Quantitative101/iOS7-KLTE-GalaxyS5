@@ -2,7 +2,7 @@
 
 iOS 7 for the Galaxy S5!
 
-The iOS 7.1.2 userland of an iPad 2 (iPad2,2, build 11D257) running on an ARMv7 port of Apple's XNU 2107 kernel, on a
+The iOS 7.1.2 userland of an iPod touch 5 (iPod5,1, build 11D257) running on an ARMv7 port of Apple's XNU 2107 kernel, on a
 Samsung Galaxy S5 SM-G900M (`klte`, Qualcomm MSM8974PRO-AC / Snapdragon 801).
 
 > **Experimental.** This is a research port, not something to run on a phone you depend on. Flashing it replaces the
@@ -19,17 +19,29 @@ Works:
 
 - Boot from Samsung's LK bootloader through a small stub (`s5/stub/`) in a clone of the phone's own boot image
 - eMMC storage (SDHCI), root filesystem on the `userdata` partition
-- launchd, backboardd, SpringBoard: lock screen, unlock, home screen
-- Settings, Mail, Contacts open and run
+- launchd, backboardd, SpringBoard: lock screen, unlock, home screen with wallpaper and rounded icons
+- 480x800 @1x interface stretched to the full 1080x1920 panel (about 7% taller than true aspect; `J1_S5_FILL=0` letterboxes)
 - Touch (Synaptics over bit-banged I2C) and the Home key (PMA8084 GPIO over SPMI)
+- On-screen keyboard (iPhone landscape layout squeezed to 480 points; slow, its image cache is off)
 - Software OpenGL ES renderer injected into backboardd (`ports/glshim/`), with a fast path for axis-aligned
   rectangles (most CoreAnimation layers)
 - Data cache enabled; CPU0 clock raised from 960 MHz to 1.5 GHz (see below)
 - CPU1 woken as a helper core that mirrors finished frames to the command-mode panel; XNU itself still runs on one
   core (plan for real SMP in `docs/SMP-SCOPE.md`)
 
-Not working yet: on-screen keyboard (the iPad2,2 root has no layouts for the phone-class screen), Photos (assetsd
-crash loop), Wi-Fi, cellular, audio, sensors, real multi-core scheduling.
+Automated launch test of the 24 system apps (does the app stay alive for 15 seconds; this does not prove the app is usable):
+
+| Result | Apps |
+|---|---|
+| Stay running | Settings (occasionally crashes), Notes, Photos, Camera, Contacts, Calendar, Reminders, Clock, Calculator, Weather, Maps, Safari, Mail, Messages, FaceTime, Videos, Voice Memos, Passbook, App Store, iTunes Store |
+| Crash | Stocks (every time, inside QuartzCore) |
+| Abort | Game Center (QuartzCore allocator assertion, intermittent) |
+| Killed during launch | Music (by backboardd, probably its launch watchdog) |
+| Cannot launch | Nike+ |
+
+Not working yet: Wi-Fi, cellular, audio, camera hardware, sensors, GPU acceleration, real multi-core scheduling.
+Notes and Reminders run with one CoreUI CoreImage effect disabled. CoreImage's CPU renderer (`J1_CI_SOFTWARE=1` in the
+shim) appeared to freeze the phone when apps launched, so it is off.
 
 ## Layout
 
@@ -42,7 +54,7 @@ crash loop), Wi-Fi, cellular, audio, sensors, real multi-core scheduling.
 | `ports/glshim/` | Software GLES renderer and the loader injected into backboardd; `test/` has a native self-test and benchmark |
 | `ports/testapp/` | Guest helper that reloads the renderer payload at boot |
 | `s5/stub/` | Bare-metal stub LK starts as the "kernel": sets the recovery restart reason, arms the watchdog, jumps to XNU |
-| `s5/tools/` | Boot image cloner (keeps the QCDT), log ring and frame dump decoders, userdata writer, TWRP probes |
+| `s5/tools/` | Boot image cloner (keeps the QCDT), log ring and frame dump decoders, userdata and sector-run writers, iPod root builder (`build-ipod-root.sh`), @2x to @1x image generator (`make-1x-images.py`), dyld-cache crash symbolisers (`findcode.py`, `whichimg.py`, `objcsym.py`) |
 | `docs/DEVLOG.md` | The full development log (run by run), including the root filesystem fixes |
 
 ## Building
@@ -67,7 +79,8 @@ included: take the needed libraries/frameworks from Xcode's iPhoneOS SDK.
 ## What you supply
 
 - **Your phone's own stock boot image** (dump `boot`, mmcblk0p15, from TWRP). It is only used as a container.
-- **The iPad2,2 iOS 7.1.2 (11D257) IPSW**, from Apple. Its decrypted root filesystem becomes the iOS root.
+- **The iPod5,1 iOS 7.1.2 (11D257) IPSW**, from Apple. Its decrypted root filesystem becomes the iOS root
+  (`s5/tools/build-ipod-root.sh`, then `s5/tools/make-1x-images.py`: the root ships only @2x artwork).
 - **The root filesystem setup**: the root and `/private/var` volumes go into an MBR disk image (`ports/tools/make-disk.py`)
   written to `userdata` (`s5/tools/write-userdata.sh`), plus the renderer payload and a few fixes to the root (launchd
   jobs, SpringBoard and MobileGestalt adjustments). These steps are described in `docs/DEVLOG.md`; there is no
@@ -111,5 +124,5 @@ J1_KFLAGS=-DJ1_S5_CPU_L=90 S5=1 bash ports/tools/build-xnu.sh
 ## License
 
 See `LICENSE`. The kernel patch modifies Apple's XNU and is under the Apple Public Source License 2.0; everything else
-written for this port is MIT. iOS, iPad and XNU are Apple trademarks; Galaxy is a Samsung trademark. This project is not
+written for this port is MIT. iOS, iPod touch and XNU are Apple trademarks; Galaxy is a Samsung trademark. This project is not
 affiliated with Apple, Samsung or Qualcomm.
