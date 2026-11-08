@@ -1,0 +1,15 @@
+# kernel tree fetched by ports/tools/get-xnu.sh, and build outputs
+ports/xnu-j1xlte/
+ports/build/
+s5/build/
+ports/glshim/sdk/
+*.o
+*.dylib
+*.img
+*.bin
+*.elf
+*.dtb
+*.log
+ports/glshim/test/bench
+ports/glshim/test/host_test
+.DS_Store
