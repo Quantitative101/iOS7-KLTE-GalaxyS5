@@ -50,41 +50,34 @@ shim) appeared to freeze the phone when apps launched, so it is off.
 | `xnu/s5-xnu-j1xlte.patch` | All kernel changes, against [kOtusin/xnu-j1xlte](https://github.com/kOtusin/xnu-j1xlte) commit `e8f2dc9` |
 | `ports/tools/get-xnu.sh` | Clones that base into `ports/xnu-j1xlte` and applies the patch |
 | `ports/tools/build-xnu.sh` | Kernel build with Xcode clang (`S5=1` selects the Galaxy S5 variant); `stubs/` are its host-tool stand-ins |
-| `ports/tools/` | Mach-O flattener, Apple device tree writer, root image helpers (HFS extraction, disk assembly, dylib injection), dyld-cache symbol tools |
-| `ports/glshim/` | Software GLES renderer and the loader injected into backboardd; `test/` has a native self-test and benchmark |
-| `ports/testapp/` | Guest helper that reloads the renderer payload at boot |
+| `ports/tools/` | Mach-O flattener, Apple device tree writer, firmware decryption (`vfdecrypt.py`), root image helpers (HFS extraction, disk assembly, dylib injection), dyld-cache symbol tools |
+| `ports/glshim/` | Software GLES renderer and the loader injected into backboardd; `sdk/` holds the link stubs it builds against; `test/` has a native self-test and benchmark |
+| `ports/testapp/` | Guest helper that reloads the renderer payload at boot (`build.sh`) |
 | `s5/stub/` | Bare-metal stub LK starts as the "kernel": sets the recovery restart reason, arms the watchdog, jumps to XNU |
-| `s5/tools/` | Boot image cloner (keeps the QCDT), log ring and frame dump decoders, userdata and sector-run writers, iPod root builder (`build-ipod-root.sh`), @2x to @1x image generator (`make-1x-images.py`), dyld-cache crash symbolisers (`findcode.py`, `whichimg.py`, `objcsym.py`) |
+| `s5/root/` | List of the launchd jobs the S5 root keeps |
+| `s5/tools/` | Boot image cloner (keeps the QCDT), root and `/var` volume builders (`build-ipod-root.sh`, `build-var.sh`), binary patcher (`patch-ipod-binaries.py`), @2x to @1x image generator (`make-1x-images.py`), userdata and sector-run writers, log ring and frame dump decoders, dyld-cache crash symbolisers (`findcode.py`, `whichimg.py`, `objcsym.py`) |
+| `docs/BUILDING.md` | Step-by-step guide from a fresh clone to a booting phone |
 | `docs/DEVLOG.md` | The full development log (run by run), including the root filesystem fixes |
 
 ## Building
 
-Requirements: macOS with Xcode (its clang builds the kernel and the renderer), `arm-none-eabi-gcc`/`binutils` for the
-stub, Python 3.
+**See [docs/BUILDING.md](docs/BUILDING.md)** for the full guide: requirements, kernel, boot image, renderer, decrypting
+the firmware, root and `/var` volumes, the userdata image, flashing, logs and going back to Android.
+
+In short (macOS with Xcode, `arm-none-eabi-gcc`/`binutils`, Python 3 with `cryptography` and `Pillow`):
 
 ```sh
-bash ports/tools/get-xnu.sh                 # fetch the base tree and apply the S5 patch
-S5=1 bash ports/tools/build-xnu.sh          # -> ports/build/obj-s5/DEVELOPMENT_ARM_EXYNOS3475_J1XLTE/mach_kernel
-bash s5/stub/build.sh /path/to/your/stock-boot.img   # -> s5/build/xnu-boot.img
+bash ports/tools/get-xnu.sh && S5=1 bash ports/tools/build-xnu.sh     # kernel
+bash s5/stub/build.sh /path/to/your/stock-boot.img                     # -> s5/build/xnu-boot.img
+sh ports/glshim/build.sh && sh ports/testapp/build.sh                  # renderer, reload daemon
+bash s5/tools/build-ipod-root.sh && bash s5/tools/build-var.sh         # needs the decrypted iPod5,1 root filesystem
 ```
-
-`build-xnu.sh` prints `done` and the first error-looking lines of `ports/build/make.log`; errors from the late
-`ctf_insert` / symbol-set steps are expected (the kernel is linked before them). `s5/stub/build.sh` flattens the
-kernel, writes a minimal device tree and puts both, with the stub, into a copy of your stock boot image, keeping its
-header and QCDT (LK chooses the DTB from it).
-
-The renderer (`ports/glshim/build.sh`) links against an iPhoneOS SDK sysroot in `ports/glshim/sdk/`, which is not
-included: take the needed libraries/frameworks from Xcode's iPhoneOS SDK.
 
 ## What you supply
 
 - **Your phone's own stock boot image** (dump `boot`, mmcblk0p15, from TWRP). It is only used as a container.
-- **The iPod5,1 iOS 7.1.2 (11D257) IPSW**, from Apple. Its decrypted root filesystem becomes the iOS root
-  (`s5/tools/build-ipod-root.sh`, then `s5/tools/make-1x-images.py`: the root ships only @2x artwork).
-- **The root filesystem setup**: the root and `/private/var` volumes go into an MBR disk image (`ports/tools/make-disk.py`)
-  written to `userdata` (`s5/tools/write-userdata.sh`), plus the renderer payload and a few fixes to the root (launchd
-  jobs, SpringBoard and MobileGestalt adjustments). These steps are described in `docs/DEVLOG.md`; there is no
-  one-command script yet.
+- **The iPod5,1 iOS 7.1.2 (11D257) IPSW**, from Apple, and its root filesystem key. The build scripts turn its
+  decrypted root filesystem into the root and `/private/var` volumes locally; nothing from it is in this repository.
 
 ## Flashing and recovery
 

@@ -3,7 +3,7 @@
 #   j1shim.dylib : thin loader, goes into the root image (tools/fast-shim.sh), injected into backboardd.
 #   j1gl.dylib   : swappable GL code (fake macro context + software GLES), delivered at runtime via tools/push-gl.sh.
 set -e
-# Needs sdk/ = an iPhoneOS SDK sysroot with OpenGLES, libSystem and libobjc (from Xcode's iPhoneOS SDK, not in this repo).
+# Links against sdk/: minimal hand-written .tbd stubs for OpenGLES, libSystem and libobjc (armv7, only the symbols used).
 cd "$(dirname "$0")"
 P=..
 python3 -I gen-trace.py gl/glnames.txt

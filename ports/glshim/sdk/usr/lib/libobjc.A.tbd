@@ -1,0 +1,10 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ armv7-ios ]
+install-name:    '/usr/lib/libobjc.A.dylib'
+current-version: 228
+exports:
+  - targets:         [ armv7-ios ]
+    symbols:         [ _objc_getClass, _object_getClass, _class_copyMethodList, _method_getName, _method_setImplementation,
+                       _sel_getName, _sel_registerName, _class_getName, _objc_msgSend ]
+...

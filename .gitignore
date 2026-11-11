@@ -2,7 +2,10 @@
 ports/xnu-j1xlte/
 ports/build/
 s5/build/
-ports/glshim/sdk/
+# Apple firmware, decrypted root filesystem and the volumes built from it: never commit these
+ports/ipsw/
+backup/
+ports/testapp/fbtest
 *.o
 *.dylib
 *.img
