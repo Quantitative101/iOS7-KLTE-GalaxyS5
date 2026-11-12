@@ -98,6 +98,28 @@ static u32 find_entry_va(const unsigned char *img)
  * the jump landed in the middle of the kernel. Falls back to LOAD_PA when the header has no usable __TEXT.
  * Use it by copying it over stub.c before s5/stub/build.sh.
  */
+static u32 find_seg_va(const unsigned char *img, const char *name)
+{
+    u32 ncmds = ((const u32 *)img)[4];
+    const unsigned char *p = img + 28;
+    if (((const u32 *)img)[0] != 0xfeedfaceu || ncmds > 64)
+        return 0;
+    for (u32 i = 0; i < ncmds; i++) {
+        u32 cmd = ((const u32 *)p)[0], size = ((const u32 *)p)[1];
+        if (size < 8 || size > 0x10000u || (size & 3))
+            return 0;
+        if (cmd == 1 /* LC_SEGMENT */) {
+            u32 k = 0;
+            while (k < 16 && name[k] && p[8 + k] == (unsigned char)name[k])
+                k++;
+            if (k < 16 && !name[k] && !p[8 + k])
+                return ((const u32 *)p)[6];
+        }
+        p += size;
+    }
+    return 0;
+}
+
 static u32 find_text_va(const unsigned char *img)
 {
     u32 ncmds = ((const u32 *)img)[4];
@@ -192,6 +214,15 @@ void stub_main(u32 dtb)
     crumb(0, 0x4a315502); /* kernel copied */
     crumb(12, ((volatile u32 *)load_pa)[0]);
     crumb(13, ((volatile u32 *)load_pa)[4]);
+    /* GitHub issue #1: the kernel read 0 from its first __DATA word (__nl_symbol_ptr). Row 15 = __DATA vmaddr, row 16 =
+     * that word right after the copy, row 17 = the same word just before the jump into the kernel. */
+    {
+        u32 data_va = find_seg_va((const unsigned char *)load_pa, "__DATA");
+        u32 text_va2 = find_seg_va((const unsigned char *)load_pa, "__TEXT");
+        crumb(15, data_va);
+        if (data_va > text_va2 && text_va2 && data_va - text_va2 < ksize)
+            crumb(16, ((volatile u32 *)(data_va - VIRT_BASE + PHYS_BASE))[0]);
+    }
     entry_va = find_entry_va((const unsigned char *)load_pa);
     crumb(2, entry_va);
     if (!entry_va) {
@@ -221,6 +252,11 @@ void stub_main(u32 dtb)
     for (int i = 0; cl[i]; i++)
         ba->CommandLine[i] = cl[i];
     crumb(3, ba_pa);
+    {
+        u32 data_va = ((volatile u32 *)CRUMBS)[15];
+        if (data_va >= VIRT_BASE && data_va - VIRT_BASE < ksize + 0x1000u)
+            crumb(17, ((volatile u32 *)(data_va - VIRT_BASE + PHYS_BASE))[0]);
+    }
     crumb(0, 0x4a315504); /* jumping to XNU */
     jump_to_xnu(entry_va - VIRT_BASE + PHYS_BASE, ba_pa);
     for (;;)
