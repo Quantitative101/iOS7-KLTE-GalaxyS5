@@ -214,14 +214,14 @@ void stub_main(u32 dtb)
     crumb(0, 0x4a315502); /* kernel copied */
     crumb(12, ((volatile u32 *)load_pa)[0]);
     crumb(13, ((volatile u32 *)load_pa)[4]);
-    /* GitHub issue #1: the kernel read 0 from its first __DATA word (__nl_symbol_ptr). Row 15 = __DATA vmaddr, row 16 =
-     * that word right after the copy, row 17 = the same word just before the jump into the kernel. */
+    /* GitHub issue #1: the kernel read 0 from its first __DATA word (__nl_symbol_ptr). Row 15 = __DATA vmaddr, row 9 =
+     * that word right after the copy, row 10 = the same word just before the jump. (Rows 16-18 belong to locore.s.) */
     {
         u32 data_va = find_seg_va((const unsigned char *)load_pa, "__DATA");
         u32 text_va2 = find_seg_va((const unsigned char *)load_pa, "__TEXT");
         crumb(15, data_va);
         if (data_va > text_va2 && text_va2 && data_va - text_va2 < ksize)
-            crumb(16, ((volatile u32 *)(data_va - VIRT_BASE + PHYS_BASE))[0]);
+            crumb(9, ((volatile u32 *)(data_va - VIRT_BASE + PHYS_BASE))[0]);
     }
     entry_va = find_entry_va((const unsigned char *)load_pa);
     crumb(2, entry_va);
@@ -255,7 +255,7 @@ void stub_main(u32 dtb)
     {
         u32 data_va = ((volatile u32 *)CRUMBS)[15];
         if (data_va >= VIRT_BASE && data_va - VIRT_BASE < ksize + 0x1000u)
-            crumb(17, ((volatile u32 *)(data_va - VIRT_BASE + PHYS_BASE))[0]);
+            crumb(10, ((volatile u32 *)(data_va - VIRT_BASE + PHYS_BASE))[0]);
     }
     crumb(0, 0x4a315504); /* jumping to XNU */
     jump_to_xnu(entry_va - VIRT_BASE + PHYS_BASE, ba_pa);
